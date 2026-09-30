@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>Shadow Fighter</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="game-container"></div>
+
+  <!-- Touch / mouse controls. They only write into the shared input state in game.js -->
+  <div id="controls">
+    <div id="joystick"><div id="joy-knob"></div></div>
+    <div id="buttons">
+      <button class="act" data-act="jump">JUMP</button>
+      <button class="act" data-act="punch">PUNCH</button>
+      <button class="act" data-act="kick">KICK</button>
+      <button class="act" data-act="block">BLOCK</button>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
