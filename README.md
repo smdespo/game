@@ -1,19 +1,7 @@
-# Shadow Fighter
-
-A Phaser 3 fighting-game prototype with a cinematic, original black-and-gold silhouette presentation. Open `index.html` in a browser with internet access for the Phaser CDN, or serve this folder with VS Code Live Server.
-
-## Controls
-
-- Move: `A` / `D` or left / right arrow
-- Jump: `Space` or up arrow
-- Punch: `J`
-- Kick: `K`
-- Block: hold `L`
-- Restart after a round: `Enter`
-- Touch: use the left joystick and right-side action buttons
-
-## Current presentation
-
-The arena, mountain and temple silhouettes, golden sun, fighters, portraits, HUD, particles, and combat effects are drawn procedurally with Phaser. Fighter physics and combat hitboxes remain independent from the rendered silhouettes, so original sprite sheets can replace the visuals later without rebuilding combat.
-
-There are no external art or audio assets yet; the sound hooks remain placeholders.
+# Shadow Fighter (cinematic silhouette prototype)
+Open `index.html` in Chrome (internet needed for the Phaser CDN), or use VS Code Live Server.
+Desktop: A/D or arrows move, SPACE/Up jump, J punch, K kick, L block, Enter restart.
+Mobile: left joystick (horizontal), right buttons JUMP / PUNCH / KICK / BLOCK (hold).
+Round: 99s timer; at 0 the fighter with more HP wins.
+Visuals are all procedural (Phaser Graphics). To swap in sprites later: replace `buildPose/paint` in `updateFighterVisuals`
+and hook `onStateChange`. Sprite names: assets/player/player_{idle,run,jump,punch,kick,block,hit,death}.png, same for enemy.

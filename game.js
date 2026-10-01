@@ -1,8 +1,8 @@
 // =====================================================================
-// SHADOW FIGHTER - Version 2 (mobile-ready prototype)
-// Built on Version 1: same combat timeline, hitboxes, AI and physics.
-// New: unified input, joystick + buttons, fighter states, effects,
-//      responsive UI, sound/sprite hooks.
+// SHADOW FIGHTER - Version 3 (cinematic silhouette look)
+// Mechanics unchanged from V2: same combat timeline, hitboxes, AI, physics.
+// New: procedural silhouette fighters, layered golden background, HUD,
+//      timer, round intro, ambient embers, restyled effects.
 // =====================================================================
 
 // ---------------------------------------------------------------------
@@ -12,7 +12,7 @@ const GAME_WIDTH = 960;
 const GAME_HEIGHT = 540;
 const GROUND_TOP = 480;
 
-const FIGHTER_WIDTH = 50;
+const FIGHTER_WIDTH = 50;     // physics/hitbox size (unchanged, visuals are drawn on top)
 const FIGHTER_HEIGHT = 100;
 
 const PLAYER_SPEED = 220;
@@ -22,46 +22,42 @@ const JUMP_SPEED = -520;
 const MAX_HP = 100;
 const HIT_STUN_TIME = 300;
 const BLOCK_DAMAGE_MULTIPLIER = 0.2;
-const ATTACK_COOLDOWN = 120;      // extra pause after recovery before the next attack
+const ATTACK_COOLDOWN = 120;
 const ENEMY_ATTACK_RANGE = 85;
 const JOY_DEADZONE = 0.2;
-const ROUND_LENGTH = 99;
-const COLORS = {
-  black: 0x080604,
-  brown: 0x1a0f08,
-  deepOrange: 0xa63d0d,
-  orange: 0xd96b16,
-  gold: 0xe5a83b,
-  lightGold: 0xffd76a,
-  cream: 0xfff0b0
-};
+const ROUND_TIME = 99;
+
+// Palette
+const C = { BLACK: 0x080604, BROWN: 0x1a0f08, DEEP: 0xa63d0d, ORANGE: 0xd96b16,
+            GOLD: 0xe5a83b, LGOLD: 0xffd76a, CREAM: 0xfff0b0 };
+const SERIF = 'Georgia, "Times New Roman", serif';
+const NAMES = { player: 'KAAL', enemy: 'RAAVAN' };
 
 // times in ms. total = startup + active + recovery
 const ATTACKS = {
-  punch:   { damage: 10, startup: 100, active: 120, total: 350, reach: 55, height: 24, yOffset: -20, color: 0xffd76a, knock: 220 },
-  kick:  { damage: 15, startup: 180, active: 140, total: 550, reach: 75, height: 24, yOffset: 25,  color: 0xd96b16, knock: 320 }
+  punch: { damage: 10, startup: 100, active: 120, total: 350, reach: 55, height: 24, yOffset: -20, color: C.LGOLD, knock: 220 },
+  kick:  { damage: 15, startup: 180, active: 140, total: 550, reach: 75, height: 24, yOffset: 25,  color: C.ORANGE, knock: 320 }
 };
 
-// Fighter states (used for future sprite animations)
 const S = { IDLE: 'IDLE', RUN: 'RUN', JUMP: 'JUMP', ATTACK: 'ATTACK', BLOCK: 'BLOCK',
             HIT: 'HIT', DEAD: 'DEAD', CHASE: 'CHASE' };
 
-// Sprite sheet names for later. Placeholders are used until these are loaded.
-// Files: assets/player/player_idle.png ... assets/enemy/enemy_death.png
+// Sprite sheet names for later: assets/player/player_idle.png ...
 const SPRITE_KEYS = ['idle', 'run', 'jump', 'punch', 'kick', 'block', 'hit', 'death'];
+
+// Body proportions for the procedural fighters (swap for sprites later)
+const CFG = {
+  player: { kind: 'player', scale: 1,    hip: 46, torso: 30, head: 9,    hw: 12, sw: 16, legW: 11, armW: 8,  arm: 18, lean: 4,  phase: 0 },
+  enemy:  { kind: 'enemy',  scale: 1.12, hip: 44, torso: 34, head: 10.5, hw: 18, sw: 27, legW: 14, armW: 11, arm: 19, lean: 10, phase: 2 }
+};
 
 // ---------------------------------------------------------------------
 // 2. GLOBALS
 // ---------------------------------------------------------------------
-let scene, player, enemy, fightState, healthBarGraphics, hpTexts, timerText, roundTimer = ROUND_LENGTH;
-let atmosphericParticles = [];
-let cameraFocusX = GAME_WIDTH / 2;
+let scene, player, enemy, fightState, hudBars, timerText, timeLeft, ambient, embers;
 
 // ---------------------------------------------------------------------
-// 3. UNIFIED INPUT
-// Keyboard, joystick and buttons ALL write here. The player controller
-// only reads `input`. (jump/punch/kick are one-shot triggers; the
-// controller clears them once read. moveX and block are held values.)
+// 3. UNIFIED INPUT (unchanged)
 // ---------------------------------------------------------------------
 const input = { moveX: 0, jump: false, punch: false, kick: false, block: false };
 const kbHeld = { left: false, right: false, block: false };
@@ -84,7 +80,6 @@ function resetInput() {
   refreshInput();
 }
 
-// --- Keyboard (registered once) ---
 const KEY_HOLD = { KeyA: 'left', ArrowLeft: 'left', KeyD: 'right', ArrowRight: 'right', KeyL: 'block' };
 const KEY_TRIGGER = { Space: 'jump', ArrowUp: 'jump', KeyJ: 'punch', KeyK: 'kick' };
 
@@ -102,7 +97,6 @@ window.addEventListener('blur', function () {
   kbHeld.left = kbHeld.right = kbHeld.block = false; refreshInput();
 });
 
-// --- Virtual joystick (horizontal only) ---
 const joyBase = document.getElementById('joystick');
 const joyKnob = document.getElementById('joy-knob');
 let joyPointer = null;
@@ -117,7 +111,6 @@ function moveJoystick(e) {
   const radius = r.width / 2;
   const dx = e.clientX - (r.left + radius);
   const dy = e.clientY - (r.top + radius);
-  // Knob stays inside the base (circular clamp), but only dx drives movement.
   const dist = Math.hypot(dx, dy) || 1;
   const k = Math.min(1, (radius * 0.6) / dist);
   joyKnob.style.transform = 'translate(' + dx * k + 'px,' + dy * k + 'px)';
@@ -142,7 +135,6 @@ joyBase.addEventListener('pointermove', function (e) {
   });
 });
 
-// --- Action buttons ---
 document.querySelectorAll('.act').forEach(function (btn) {
   const act = btn.dataset.act;
   btn.addEventListener('pointerdown', function (e) {
@@ -163,8 +155,6 @@ document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
 // ---------------------------------------------------------------------
 // 4. SOUND HOOKS (no audio files yet)
-// Later: scene.load.audio('punch', 'assets/audio/punch.mp3') and play below.
-// Names: punch, kick, hit, block, death, music
 // ---------------------------------------------------------------------
 const Sound = {
   play: function (name) { /* if (scene.cache.audio.exists(name)) scene.sound.play(name); */ }
@@ -178,78 +168,111 @@ new Phaser.Game({
   width: GAME_WIDTH,
   height: GAME_HEIGHT,
   parent: 'game-container',
-  backgroundColor: '#0d0d1a',
+  backgroundColor: '#080604',
   input: { touch: { capture: false } },
   physics: { default: 'arcade', arcade: { gravity: { y: 900 }, debug: false } },
-  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },  // keeps 16:9
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
   scene: { create: create, update: update }
 });
 
 // ---------------------------------------------------------------------
-// 6. CREATE
+// 6. SMALL DRAWING HELPERS
+// ---------------------------------------------------------------------
+function lerpC(a, b, t) {
+  const ar = a >> 16 & 255, ag = a >> 8 & 255, ab = a & 255;
+  const br = b >> 16 & 255, bg = b >> 8 & 255, bb = b & 255;
+  return (Math.round(ar + (br - ar) * t) << 16) | (Math.round(ag + (bg - ag) * t) << 8) | Math.round(ab + (bb - ab) * t);
+}
+// Vertical gradient built from bands (works in both WebGL and Canvas)
+function vgrad(g, x, y, w, h, c1, c2, n, a0, a1) {
+  for (let i = 0; i < n; i++) {
+    const t = n > 1 ? i / (n - 1) : 0;
+    g.fillStyle(lerpC(c1, c2, t), a0 + ((a1 === undefined ? a0 : a1) - a0) * t);
+    g.fillRect(x, y + h * i / n, w, Math.ceil(h / n) + 1);
+  }
+}
+function mkRnd(seed) { let s = seed; return function () { s = (s * 16807) % 2147483647; return s / 2147483647; }; }
+
+// Thick rounded limb segment
+function seg(g, a, b, w) {
+  g.fillCircle(a.x, a.y, w / 2); g.fillCircle(b.x, b.y, w / 2);
+  const dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy) || 1;
+  const nx = -dy / l * w / 2, ny = dx / l * w / 2;
+  g.fillPoints([{ x: a.x + nx, y: a.y + ny }, { x: b.x + nx, y: b.y + ny },
+                { x: b.x - nx, y: b.y - ny }, { x: a.x - nx, y: a.y - ny }], true);
+}
+
+// Head shapes: player = hooded, enemy = horned. Shared by fighters and portraits.
+function drawHead(g, kind, x, y, r, d) {
+  if (kind === 'player') {
+    g.fillTriangle(x + d * r * 0.2, y - r * 1.15, x - d * r * 2.0, y + r * 1.0, x - d * r * 0.3, y + r * 1.15);
+    g.fillCircle(x, y, r);
+  } else {
+    g.fillCircle(x, y, r * 1.1);
+    g.fillTriangle(x + d * r * 0.1, y - r * 0.9, x + d * r * 0.55, y - r * 2.0, x + d * r * 0.95, y - r * 0.6);
+    g.fillTriangle(x - d * r * 0.5, y - r * 0.8, x - d * r * 1.15, y - r * 1.9, x - d * r * 0.05, y - r * 1.0);
+  }
+}
+
+// ---------------------------------------------------------------------
+// 7. CREATE
 // ---------------------------------------------------------------------
 function create() {
   scene = this;
   resetInput();
-  updateRoundTimer.startedAt = null;
-  cameraFocusX = GAME_WIDTH / 2;
 
   drawBackground();
+  drawGround();
 
-  drawArenaFloor();
   const ground = scene.add.rectangle(GAME_WIDTH / 2, GROUND_TOP + 30, GAME_WIDTH, 60, 0x000000, 0);
   scene.physics.add.existing(ground, true);
 
-  player = createFighter(250, 400, 0x2ecc71, 'player');
-  enemy = createFighter(710, 400, 0xe74c3c, 'enemy');
+  player = createFighter(250, 400, C.GOLD, 'player');
+  enemy = createFighter(710, 400, C.ORANGE, 'enemy');
 
   scene.physics.add.collider(player.sprite, ground);
   scene.physics.add.collider(enemy.sprite, ground);
   scene.physics.add.collider(player.sprite, enemy.sprite);
 
-  // Cinematic HUD
-  healthBarGraphics = scene.add.graphics().setDepth(10).setScrollFactor(0);
-  const label = { fontSize: '16px', fontFamily: 'Arial', color: '#fff0b0', letterSpacing: 3 };
-  scene.add.text(108, 24, 'KAAL', label).setDepth(10).setScrollFactor(0);
-  scene.add.text(GAME_WIDTH - 108, 24, 'RAAVAN', label).setOrigin(1, 0).setDepth(10).setScrollFactor(0);
-  const hpStyle = { fontSize: '13px', fontFamily: 'Arial', color: '#fff0b0', stroke: '#080604', strokeThickness: 3 };
-  hpTexts = {
-    player: scene.add.text(420, 58, '100', hpStyle).setOrigin(1, 0.5).setDepth(11).setScrollFactor(0),
-    enemy: scene.add.text(540, 58, '100', hpStyle).setOrigin(0, 0.5).setDepth(11).setScrollFactor(0)
-  };
+  buildAmbient();
+  buildHUD();
 
-  drawPortrait(52, 48, false);
-  drawPortrait(GAME_WIDTH - 52, 48, true);
-  timerText = scene.add.text(GAME_WIDTH / 2, 22, String(ROUND_LENGTH), {
-    fontSize: '29px', fontFamily: 'Arial', color: '#fff0b0',
-    stroke: '#080604', strokeThickness: 5
-  }).setOrigin(0.5, 0).setDepth(12).setScrollFactor(0);
+  scene.add.text(GAME_WIDTH / 2, GROUND_TOP + 34,
+    'A/D or ←/→ move   SPACE/↑ jump   J punch   K kick   L block',
+    { fontSize: '13px', fontFamily: SERIF, color: '#a67a2e' }).setOrigin(0.5).setAlpha(0.55);
 
-  enemy.nextAttackTime = scene.time.now + 1500;
+  const cam = scene.cameras.main;
+  cam.setZoom(1.06);   // small zoom gives room for a gentle follow-pan
+
+  enemy.nextAttackTime = scene.time.now + 2500;
 
   fightState = 'intro';
-  roundTimer = ROUND_LENGTH;
-  const roundText = scene.add.text(GAME_WIDTH / 2, 220, 'ROUND  01', {
-    fontSize: '30px', fontFamily: 'Arial', color: '#fff0b0',
-    letterSpacing: 7, stroke: '#080604', strokeThickness: 6
-  }).setOrigin(0.5).setDepth(20).setScrollFactor(0).setAlpha(0);
-  scene.tweens.add({ targets: roundText, alpha: 1, duration: 400, yoyo: true, hold: 450 });
-  scene.time.delayedCall(1250, function () {
-    roundText.setText('FIGHT').setFontSize(52).setLetterSpacing(10).setAlpha(0);
-    scene.tweens.add({ targets: roundText, alpha: 1, duration: 180, yoyo: true, hold: 300,
-      onComplete: function () {
-        roundText.destroy();
-        fightState = 'fighting';
-        enemy.nextAttackTime = scene.time.now + 1200;
-      }
-    });
+  timeLeft = ROUND_TIME;
+  scene.time.addEvent({ delay: 1000, loop: true, callback: tickTimer });
+  showRoundIntro();
+}
+
+function showRoundIntro() {
+  const style = { fontFamily: SERIF, fontStyle: 'bold', color: '#ffd76a' };
+  function title(txt, size, spacing) {
+    return scene.add.text(GAME_WIDTH / 2, 230, txt, Object.assign({ fontSize: size + 'px' }, style))
+      .setOrigin(0.5).setDepth(40).setScrollFactor(0).setAlpha(0)
+      .setLetterSpacing(spacing).setShadow(0, 4, '#080604', 10, true, true);
+  }
+  const r = title('ROUND 1', 52, 14);
+  scene.tweens.add({ targets: r, alpha: 1, duration: 400, hold: 500, yoyo: true, onComplete: function () { r.destroy(); } });
+  scene.time.delayedCall(1400, function () {
+    const f = title('FIGHT', 84, 10);
+    fightState = 'fighting';
+    scene.tweens.add({ targets: f, alpha: 1, scale: { from: 1.25, to: 1 }, duration: 250, hold: 350, yoyo: true,
+      onComplete: function () { f.destroy(); } });
   });
 }
 
 // ---------------------------------------------------------------------
-// 7. UPDATE
+// 8. UPDATE
 // ---------------------------------------------------------------------
-function update() {
+function update(time, delta) {
   const now = scene.time.now;
 
   if (fightState === 'fighting') {
@@ -260,7 +283,6 @@ function update() {
     updateAttack(player, enemy);
     if (fightState === 'fighting') updateAttack(enemy, player);
   } else {
-    // Intro / over: keep facing but ignore input
     input.jump = input.punch = input.kick = false;
     updateFacing(player, enemy, now);
     updateFacing(enemy, player, now);
@@ -270,283 +292,175 @@ function update() {
   updateState(enemy, now, true);
   updateFighterVisuals(player, now);
   updateFighterVisuals(enemy, now);
-  updateAtmosphere(now);
   updateCamera();
-  if (fightState === 'fighting') updateRoundTimer(now);
+  updateAmbient(now, delta);
   drawHealthBars();
 }
 
+// Gentle horizontal pan toward the midpoint of the fighters (both stay in view)
+function updateCamera() {
+  const cam = scene.cameras.main;
+  const mid = (player.sprite.x + enemy.sprite.x) / 2;
+  const target = Phaser.Math.Clamp((mid - GAME_WIDTH / 2) * 0.1, -26, 26);
+  cam.scrollX += (target - cam.scrollX) * 0.06;
+}
+
 // ---------------------------------------------------------------------
-// 8. BACKGROUND
+// 9. BACKGROUND (layered) + GROUND
 // ---------------------------------------------------------------------
+function ridge(g, top, amp, step, color, alpha, seed) {
+  const rnd = mkRnd(seed);
+  const pts = [{ x: -20, y: GROUND_TOP + 2 }];
+  for (let x = -20; x <= GAME_WIDTH + 40; x += step) {
+    pts.push({ x: x, y: top - rnd() * amp - Math.sin(x * 0.007 + seed) * amp * 0.4 });
+  }
+  pts.push({ x: GAME_WIDTH + 40, y: GROUND_TOP + 2 });
+  g.fillStyle(color, alpha); g.fillPoints(pts, true);
+}
+
+function pagoda(g, cx, baseY, w, tiers, color) {
+  let y = baseY, cw = w;
+  g.fillStyle(color, 1);
+  g.fillRect(cx - cw * 0.45, y - 16, cw * 0.9, 16); y -= 16;
+  for (let i = 0; i < tiers; i++) {
+    const bw = cw * 0.6;
+    g.fillStyle(color, 1); g.fillRect(cx - bw / 2, y - 16, bw, 16);
+    g.fillStyle(C.GOLD, 0.5); g.fillRect(cx - 2, y - 12, 4, 7);      // lit window
+    g.fillStyle(color, 1); y -= 16;
+    g.fillPoints([{ x: cx - cw / 2 - 12, y: y + 4 }, { x: cx - cw / 2 + 4, y: y - 3 }, { x: cx - cw * 0.18, y: y - 12 },
+                  { x: cx + cw * 0.18, y: y - 12 }, { x: cx + cw / 2 - 4, y: y - 3 }, { x: cx + cw / 2 + 12, y: y + 4 },
+                  { x: cx + cw / 2 - 6, y: y + 6 }, { x: cx - cw / 2 + 6, y: y + 6 }], true);
+    y -= 12; cw *= 0.8;
+  }
+  g.fillTriangle(cx - 3, y, cx + 3, y, cx, y - 26);
+}
+
 function drawBackground() {
   const g = scene.add.graphics().setDepth(-10);
-  g.fillGradientStyle(0x1a0f08, 0x080604, 0x241106, 0x080604, 1);
-  g.fillRect(-80, 0, GAME_WIDTH + 160, GAME_HEIGHT);
+  const SX = 480, SY = 320;
 
-  // Layered amber haze and the sun create a backlight behind the fighters.
-  g.fillStyle(COLORS.deepOrange, 0.12); g.fillCircle(480, 290, 330);
-  g.fillStyle(COLORS.orange, 0.12); g.fillCircle(480, 280, 250);
-  g.fillStyle(COLORS.gold, 0.1); g.fillCircle(480, 265, 190);
-  g.fillStyle(COLORS.deepOrange, 0.14); g.fillCircle(480, 270, 170);
-  g.fillStyle(COLORS.orange, 0.2); g.fillCircle(480, 270, 145);
-  g.fillStyle(COLORS.gold, 0.35); g.fillCircle(480, 270, 119);
-  g.fillStyle(COLORS.lightGold, 0.92); g.fillCircle(480, 270, 96);
-  g.fillStyle(COLORS.cream, 0.32); g.fillCircle(480, 270, 82);
+  // 1. Sky
+  vgrad(g, 0, 0, GAME_WIDTH, 300, C.BLACK, C.BROWN, 30, 1);
+  vgrad(g, 0, 300, GAME_WIDTH, GROUND_TOP - 300, C.BROWN, 0x7a3110, 24, 1);
 
-  // Distant mountain ridges.
-  g.fillStyle(0x39200d, 0.82);
-  fillPolygon(g, [[-80, 414], [100, 300], [210, 365], [330, 283], [500, 400], [650, 310], [830, 392], [1000, 290], [1040, 440]], 0x39200d, 0.82);
-  g.fillStyle(0x211208, 0.95);
-  fillPolygon(g, [[-60, 435], [120, 355], [260, 402], [420, 340], [590, 418], [780, 350], [990, 420], [1020, 460]], 0x211208);
+  // 3. Atmospheric glow + 2. sun halo (soft concentric circles)
+  for (let i = 0; i < 16; i++) {
+    g.fillStyle(lerpC(C.DEEP, C.GOLD, i / 15), 0.035 + i * 0.002);
+    g.fillCircle(SX, SY, 400 - i * 17);
+  }
+  // light rays
+  for (let k = 0; k < 9; k++) {
+    const a = -Math.PI / 2 + (k - 4) * 0.22, a2 = a + 0.06;
+    g.fillStyle(C.GOLD, 0.045);
+    g.fillTriangle(SX, SY, SX + Math.cos(a) * 760, SY + Math.sin(a) * 760, SX + Math.cos(a2) * 760, SY + Math.sin(a2) * 760);
+  }
+  // sun core
+  g.fillStyle(C.ORANGE, 0.35); g.fillCircle(SX, SY, 150);
+  g.fillStyle(C.GOLD, 0.95);   g.fillCircle(SX, SY, 132);
+  g.fillStyle(C.LGOLD, 1);     g.fillCircle(SX, SY, 116);
+  g.fillStyle(C.CREAM, 0.85);  g.fillCircle(SX, SY, 78);
 
-  // Ancient gate and temple roofs, kept low-contrast against the sun.
-  drawTempleSilhouette(g, 175, 300, 0.9);
-  drawTempleSilhouette(g, 790, 315, 1.1);
-  g.fillStyle(0x130b06, 0.92);
-  fillPolygon(g, [[-40, 455], [25, 416], [80, 434], [130, 405], [210, 456], [300, 423], [350, 455], [430, 425], [510, 458], [600, 420], [680, 454], [760, 415], [850, 455], [920, 426], [1000, 458], [1010, 485], [-40, 485]], 0x130b06, 0.92);
-  drawAtmosphericParticles();
+  // horizon haze
+  vgrad(g, 0, 330, GAME_WIDTH, 150, C.ORANGE, C.DEEP, 20, 0.0, 0.35);
+
+  // 4. Distant mountains (hazy), then 5. temples, then nearer ridges
+  ridge(g, 400, 70, 40, 0x4a220c, 0.85, 7);
+  pagoda(g, 300, 430, 52, 2, 0x2a140a);
+  pagoda(g, 655, 432, 48, 2, 0x2a140a);
+  ridge(g, 440, 45, 30, 0x24120a, 1, 13);
+  pagoda(g, 135, 462, 112, 4, 0x0e0805);
+  pagoda(g, 830, 462, 92, 3, 0x0e0805);
+  ridge(g, 462, 24, 24, 0x0a0604, 1, 29);
 }
 
-function fillPolygon(g, points, color, alpha) {
-  g.fillStyle(color, alpha === undefined ? 1 : alpha);
-  g.beginPath();
-  g.moveTo(points[0][0], points[0][1]);
-  for (let i = 1; i < points.length; i++) g.lineTo(points[i][0], points[i][1]);
-  g.closePath();
-  g.fillPath();
-}
-
-function drawTempleSilhouette(g, x, baseY, scale) {
-  const width = 118 * scale;
-  const topY = baseY - 120 * scale;
-  g.fillStyle(0x140b05, 0.93);
-  g.fillRect(x - width * 0.38, topY + 24 * scale, width * 0.76, 96 * scale);
-  fillPolygon(g, [[x - width * 0.55, topY + 28 * scale], [x, topY], [x + width * 0.55, topY + 28 * scale]], 0x140b05, 0.95);
-  fillPolygon(g, [[x - width * 0.68, topY + 35 * scale], [x, topY + 10 * scale], [x + width * 0.68, topY + 35 * scale], [x + width * 0.53, topY + 42 * scale], [x - width * 0.53, topY + 42 * scale]], 0x241106);
-  for (let i = -1; i <= 1; i++) {
-    g.fillStyle(0x080604, 1);
-    g.fillRect(x + i * 27 * scale - 5 * scale, topY + 48 * scale, 10 * scale, 72 * scale);
+function drawGround() {
+  const g = scene.add.graphics().setDepth(-9);
+  const W = GAME_WIDTH;
+  // 7. arena floor, almost black
+  vgrad(g, 0, GROUND_TOP, W, GAME_HEIGHT - GROUND_TOP + 20, 0x160c06, 0x050302, 12, 1);
+  // sun reflection on the floor
+  for (let i = 0; i < 4; i++) { g.fillStyle(C.GOLD, 0.05); g.fillEllipse(480, GROUND_TOP + 16, 560 - i * 110, 30 - i * 5); }
+  // rim of the platform
+  g.fillStyle(C.GOLD, 0.12); g.fillRect(0, GROUND_TOP - 2, W, 8);
+  g.fillStyle(C.GOLD, 0.55); g.fillRect(0, GROUND_TOP, W, 2);
+  // subtle floor lines + golden cracks
+  g.fillStyle(C.DEEP, 0.18); g.fillRect(0, GROUND_TOP + 22, W, 1); g.fillRect(0, GROUND_TOP + 44, W, 1);
+  const rnd = mkRnd(91);
+  g.lineStyle(1, C.GOLD, 0.3);
+  for (let i = 0; i < 9; i++) {
+    let x = rnd() * W, y = GROUND_TOP + 6 + rnd() * 40;
+    g.beginPath(); g.moveTo(x, y);
+    for (let j = 0; j < 3; j++) { x += (rnd() - 0.5) * 60; y += (rnd() - 0.4) * 12; g.lineTo(x, Math.min(GAME_HEIGHT, y)); }
+    g.strokePath();
   }
-  g.fillStyle(COLORS.orange, 0.18);
-  g.fillRect(x - width * 0.34, baseY - 3 * scale, width * 0.68, 2 * scale);
-}
-
-function drawArenaFloor() {
-  const g = scene.add.graphics().setDepth(-1);
-  g.fillGradientStyle(0x100a06, 0x080604, 0x080604, 0x030302, 1);
-  g.fillRect(-40, GROUND_TOP - 4, GAME_WIDTH + 80, GAME_HEIGHT - GROUND_TOP + 80);
-  g.fillStyle(COLORS.deepOrange, 0.22);
-  g.fillRect(-20, GROUND_TOP - 4, GAME_WIDTH + 40, 2);
-  g.lineStyle(1, COLORS.orange, 0.22);
-  for (let i = 0; i < 10; i++) {
-    const y = GROUND_TOP + 15 + i * 9;
-    g.lineBetween(0, y, GAME_WIDTH, y + (i % 2 ? 1 : 0));
-  }
-  g.lineStyle(2, COLORS.gold, 0.18);
-  [[110, 482, 148, 506], [148, 506, 183, 510], [350, 484, 326, 509],
-    [608, 483, 639, 507], [639, 507, 680, 512], [832, 483, 808, 507]].forEach(function (line) {
-    g.lineBetween(line[0], line[1], line[2], line[3]);
-  });
-  g.lineStyle(1, COLORS.orange, 0.14);
-  g.lineBetween(300, 495, 660, 495);
-  g.lineBetween(390, 510, 570, 510);
-}
-
-function drawAtmosphericParticles() {
-  atmosphericParticles = [];
-  for (let i = 0; i < 24; i++) {
-    const radius = Phaser.Math.FloatBetween(1, 2.6);
-    const particle = scene.add.circle(
-      Phaser.Math.Between(0, GAME_WIDTH),
-      Phaser.Math.Between(100, GROUND_TOP - 8),
-      radius,
-      i % 4 === 0 ? COLORS.lightGold : COLORS.orange,
-      Phaser.Math.FloatBetween(0.2, 0.65)
-    ).setDepth(i % 3 === 0 ? 0 : -2);
-    atmosphericParticles.push({
-      object: particle,
-      drift: Phaser.Math.FloatBetween(-5, 5),
-      speed: Phaser.Math.FloatBetween(5, 15),
-      phase: Phaser.Math.FloatBetween(0, Math.PI * 2)
-    });
-  }
-}
-
-function updateAtmosphere(now) {
-  const delta = Math.min(scene.game.loop.delta, 50) / 1000;
-  atmosphericParticles.forEach(function (particle) {
-    const obj = particle.object;
-    obj.x += particle.drift * delta;
-    obj.y -= particle.speed * delta;
-    obj.alpha = 0.2 + (Math.sin(now / 700 + particle.phase) + 1) * 0.2;
-    if (obj.y < 110) {
-      obj.y = GROUND_TOP - 10;
-      obj.x = Phaser.Math.Between(0, GAME_WIDTH);
-    }
-    if (obj.x < -5) obj.x = GAME_WIDTH + 5;
-    if (obj.x > GAME_WIDTH + 5) obj.x = -5;
-  });
-}
-
-function drawPortrait(x, y, enemyPortrait) {
-  const g = scene.add.graphics().setDepth(11).setScrollFactor(0);
-  g.fillStyle(COLORS.black, 0.96); g.fillCircle(x, y, 27);
-  g.lineStyle(2, enemyPortrait ? COLORS.orange : COLORS.lightGold, 0.9); g.strokeCircle(x, y, 29);
-  g.lineStyle(1, COLORS.gold, 0.45); g.strokeCircle(x, y, 33);
-  g.fillStyle(0x211208, 1); g.fillEllipse(x, y + 13, 27, 21);
-  g.fillStyle(COLORS.black, 1);
-  if (enemyPortrait) {
-    fillPolygon(g, [[x - 12, y - 7], [x - 11, y - 19], [x, y - 27], [x + 12, y - 17], [x + 11, y - 7], [x + 8, y + 1], [x - 9, y + 1]], COLORS.black);
-    g.fillTriangle(x - 11, y - 16, x - 19, y - 25, x - 9, y - 21);
-    g.fillTriangle(x + 11, y - 16, x + 19, y - 25, x + 9, y - 21);
-  } else {
-    g.fillEllipse(x, y - 10, 20, 25);
-    fillPolygon(g, [[x - 13, y - 11], [x, y - 30], [x + 13, y - 11], [x + 8, y - 5], [x - 8, y - 5]], COLORS.black);
-  }
-  g.fillStyle(COLORS.gold, 0.75);
-  g.fillRect(x - 8, y + 4, 16, 2);
-}
-
-function drawFighterSilhouette(f, now) {
-  const g = f.visual;
-  g.clear();
-
-  const enemyStyle = f.name === 'enemy';
-  const shoulder = enemyStyle ? 23 : 19;
-  const hip = enemyStyle ? 15 : 12;
-  const legWidth = enemyStyle ? 13 : 10;
-  const armWidth = enemyStyle ? 12 : 9;
-  const run = (f.state === S.RUN || f.state === S.CHASE) ? Math.sin(now / 90) : 0;
-  const bob = f.state === S.IDLE ? Math.sin(now / 290) * 1.5 : 0;
-  const airborne = f.state === S.JUMP;
-  const attacking = f.state === S.ATTACK;
-  const blocked = f.state === S.BLOCK;
-  const attackName = f.currentAttackName;
-  const attackProgress = attacking ? Math.min(1, (now - f.attackStartTime) / (f.currentAttack ? f.currentAttack.total : 1)) : 0;
-  const punchReach = attacking && attackName === 'punch' ? 26 + Math.sin(attackProgress * Math.PI) * 19 : 0;
-  const kickReach = attacking && attackName === 'kick' ? Math.sin(attackProgress * Math.PI) * 30 : 0;
-  const tuck = airborne ? 9 : 0;
-  const legFront = blocked ? 5 : run * 10;
-  const legBack = blocked ? -5 : -run * 10;
-  const shoulderY = -21 + bob;
-  const hipY = 13 + bob;
-  const shoulderX = enemyStyle ? 1 : 0;
-  const torsoTop = enemyStyle ? -24 : -22;
-  const torsoBottom = enemyStyle ? 22 : 18;
-  const headY = -38 + bob;
-
-  function limb(x1, y1, x2, y2, width) {
-    g.lineStyle(width + 3, COLORS.gold, 0.18);
-    g.lineBetween(x1, y1, x2, y2);
-    g.lineStyle(width, COLORS.black, 1);
-    g.lineBetween(x1, y1, x2, y2);
-  }
-  function joint(x, y, radius) {
-    g.fillStyle(COLORS.gold, 0.15); g.fillCircle(x, y, radius + 2);
-    g.fillStyle(COLORS.black, 1); g.fillCircle(x, y, radius);
-  }
-
-  // Rear arm and legs sit behind the torso.
-  limb(shoulderX - shoulder * 0.55, shoulderY, -17, -2 + legBack * 0.25, armWidth);
-  limb(-17, -2 + legBack * 0.25, -20 + legBack * 0.4, 10, armWidth - 1);
-  limb(-hip, hipY, -hip - legBack * 0.55, 31 - tuck, legWidth);
-  limb(-hip - legBack * 0.55, 31 - tuck, -hip - legBack, 48 - tuck, legWidth - 2);
-
-  // Golden rim, dark torso, and a restrained warm sash define the silhouette.
-  fillPolygon(g, [[-shoulder, torsoTop + 5], [-shoulder * 0.65, torsoTop], [shoulder * 0.65, torsoTop],
-    [shoulder, torsoTop + 5], [hip, torsoBottom - 3], [hip * 0.7, torsoBottom + 4],
-    [-hip * 0.7, torsoBottom + 4], [-hip, torsoBottom - 3]], COLORS.gold, 0.25);
-  fillPolygon(g, [[-shoulder + 2, torsoTop + 6], [-shoulder * 0.58, torsoTop + 2], [shoulder * 0.58, torsoTop + 2],
-    [shoulder - 2, torsoTop + 6], [hip - 2, torsoBottom - 4], [hip * 0.58, torsoBottom + 2],
-    [-hip * 0.58, torsoBottom + 2], [-hip + 2, torsoBottom - 4]], COLORS.black);
-  g.fillStyle(0x44200b, 0.9);
-  g.fillRect(-hip * 0.85, 4 + bob, hip * 1.7, 4);
-
-  // Front arm changes pose with block/punch and the legs extend into a kick.
-  let frontElbowX = shoulderX + shoulder + (blocked ? -4 : punchReach * 0.55);
-  let frontElbowY = blocked ? -23 : -6 + bob;
-  let frontHandX = shoulderX + shoulder * 1.55 + punchReach;
-  let frontHandY = blocked ? -35 : 9 + bob;
-  if (blocked) { frontElbowX = shoulderX + shoulder + 2; frontHandX = shoulderX + shoulder * 0.4; }
-  limb(shoulderX + shoulder * 0.55, shoulderY, frontElbowX, frontElbowY, armWidth);
-  limb(frontElbowX, frontElbowY, frontHandX, frontHandY, armWidth - 1);
-  joint(frontElbowX, frontElbowY, armWidth * 0.52);
-  joint(frontHandX, frontHandY, armWidth * 0.48);
-
-  limb(hip, hipY, hip + legFront * 0.5 + kickReach * 0.2, 31 - tuck, legWidth);
-  limb(hip + legFront * 0.5 + kickReach * 0.2, 31 - tuck, hip + legFront + kickReach, 48 - tuck, legWidth - 2);
-  joint(hip + legFront * 0.5 + kickReach * 0.2, 31 - tuck, legWidth * 0.52);
-
-  // Hooded head for KAAL; RAAVAN's broader helm and crown keep the two silhouettes distinct.
-  g.fillStyle(COLORS.gold, 0.23); g.fillEllipse(0, headY, enemyStyle ? 29 : 25, enemyStyle ? 32 : 30);
-  g.fillStyle(COLORS.black, 1); g.fillEllipse(0, headY, enemyStyle ? 26 : 22, enemyStyle ? 29 : 27);
-  if (enemyStyle) {
-    fillPolygon(g, [[-13, headY - 6], [-18, headY - 17], [-8, headY - 13], [0, headY - 22],
-      [8, headY - 13], [18, headY - 17], [13, headY - 5]], COLORS.black);
-  } else {
-    fillPolygon(g, [[-12, headY - 6], [-9, headY - 23], [0, headY - 29], [10, headY - 22], [13, headY - 5], [7, headY - 1], [-8, headY - 1]], COLORS.black);
-    g.lineStyle(2, COLORS.gold, 0.35); g.lineBetween(-9, headY - 12, 9, headY - 12);
-  }
-  g.fillStyle(COLORS.lightGold, f.state === S.HIT ? 0.9 : 0.48);
-  g.fillRect(4, headY - 1, 6, 2);
-}
-
-function updateCamera() {
-  const midpoint = (player.sprite.x + enemy.sprite.x) / 2;
-  const targetX = Phaser.Math.Clamp(midpoint, GAME_WIDTH / 2 - 25, GAME_WIDTH / 2 + 25);
-  cameraFocusX += (targetX - cameraFocusX) * 0.025;
-  scene.cameras.main.scrollX = cameraFocusX - GAME_WIDTH / 2;
-}
-
-function updateRoundTimer(now) {
-  if (updateRoundTimer.startedAt === null) updateRoundTimer.startedAt = now;
-  const next = Math.max(0, ROUND_LENGTH - Math.floor((now - updateRoundTimer.startedAt) / 1000));
-  if (next !== roundTimer) {
-    roundTimer = next;
-    timerText.setText(String(roundTimer).padStart(2, '0'));
-  }
-  if (roundTimer <= 0) {
-    const result = player.hp === enemy.hp ? 'DRAW' :
-      (player.hp > enemy.hp ? 'KAAL WINS!' : 'RAAVAN WINS!');
-    endFight(result);
-  }
+  // 6. foreground rocks in the bottom corners
+  const f = scene.add.graphics().setDepth(6);
+  f.fillStyle(0x050302, 1);
+  f.fillPoints([{ x: -10, y: 550 }, { x: -10, y: 505 }, { x: 40, y: 492 }, { x: 95, y: 512 }, { x: 150, y: 550 }], true);
+  f.fillPoints([{ x: W + 10, y: 550 }, { x: W + 10, y: 500 }, { x: W - 50, y: 490 }, { x: W - 110, y: 515 }, { x: W - 170, y: 550 }], true);
 }
 
 // ---------------------------------------------------------------------
-// 9. FIGHTERS
+// 10. AMBIENT PARTICLES (embers + dust, drawn in one Graphics)
 // ---------------------------------------------------------------------
+function buildAmbient() {
+  ambient = scene.add.graphics().setDepth(5);
+  embers = [];
+  const cols = [C.LGOLD, C.GOLD, C.ORANGE, C.CREAM];
+  for (let i = 0; i < 46; i++) {
+    embers.push({ x: Math.random() * GAME_WIDTH, y: 80 + Math.random() * 420, vx: (Math.random() - 0.5) * 10,
+      vy: -(3 + Math.random() * 14), r: 0.8 + Math.random() * 1.8, ph: Math.random() * 6.28,
+      c: cols[i % 4], a: 0.3 + Math.random() * 0.5, glow: i % 3 === 0 });
+  }
+}
+
+function updateAmbient(now, delta) {
+  const dt = Math.min(delta, 50) / 1000;
+  ambient.clear();
+  embers.forEach(function (e) {
+    e.x += (e.vx + Math.sin(now * 0.001 + e.ph) * 8) * dt;
+    e.y += e.vy * dt;
+    if (e.y < -10 || e.x < -20 || e.x > GAME_WIDTH + 20) { e.y = GROUND_TOP + 30; e.x = Math.random() * GAME_WIDTH; }
+    const a = e.a * (0.6 + 0.4 * Math.sin(now * 0.003 + e.ph));
+    if (e.glow) { ambient.fillStyle(e.c, a * 0.15); ambient.fillCircle(e.x, e.y, e.r * 3.5); }
+    ambient.fillStyle(e.c, a); ambient.fillCircle(e.x, e.y, e.r);
+  });
+}
+
+// ---------------------------------------------------------------------
+// 11. FIGHTERS (physics body = invisible rectangle; visuals = procedural silhouette)
+// ---------------------------------------------------------------------
+const NOOP = { setVisible: function () { return this; }, setPosition: function () { return this; },
+               setDisplaySize: function () { return this; }, setFillStyle: function () { return this; } };
+
 function createFighter(x, y, color, name) {
-  const shadow = scene.add.ellipse(x, GROUND_TOP + 4, FIGHTER_WIDTH + 38, 15, COLORS.black, 0.72).setDepth(1);
-  const sprite = scene.add.rectangle(x, y, FIGHTER_WIDTH, FIGHTER_HEIGHT, color).setAlpha(0).setDepth(2);
+  const cfg = CFG[name];
+  const shadow = scene.add.ellipse(x, GROUND_TOP + 4, (FIGHTER_WIDTH + 24) * cfg.scale, 12, 0x000000, 0.6).setDepth(0);
+  const sprite = scene.add.rectangle(x, y, FIGHTER_WIDTH, FIGHTER_HEIGHT, color).setVisible(false);
   scene.physics.add.existing(sprite);
   sprite.body.setCollideWorldBounds(true);
-  const faceMarker = scene.add.rectangle(x, y, 1, 1, COLORS.black).setVisible(false).setDepth(3);
-  const limb = scene.add.rectangle(0, 0, 1, 1, COLORS.black).setVisible(false).setDepth(3);
-  const visual = scene.add.graphics().setDepth(3);
+  const g = scene.add.graphics().setDepth(2);   // Future: replace with a Phaser sprite
 
   return {
-    name: name, displayName: name === 'player' ? 'KAAL' : 'RAAVAN',
-    sprite: sprite, shadow: shadow, faceMarker: faceMarker, limb: limb, visual: visual,
-    // Future: replace `sprite` with a Phaser sprite and play `${name}_${state}` animations.
+    name: name, cfg: cfg, g: g,
+    sprite: sprite, shadow: shadow, faceMarker: NOOP, limb: NOOP,
     baseColor: color,
-    hp: MAX_HP,
-    displayHp: MAX_HP,
+    hp: MAX_HP, showHp: MAX_HP, ghostHp: MAX_HP,
     state: S.IDLE,
     facing: name === 'player' ? 1 : -1,
     isAttacking: false,
     currentAttack: null,
     attackStartTime: 0,
-    attackReadyAt: 0,          // cooldown: can't start a new attack before this
+    attackReadyAt: 0,
     hasHitThisAttack: false,
     isBlocking: false,
     stunUntil: 0,
     isDead: false,
+    deathTime: 0,
     nextAttackTime: 0
   };
 }
 
-// Fighters turn toward the opponent, except while attacking or stunned
 function updateFacing(fighter, opponent, now) {
   if (fighter.isDead || fighter.isAttacking || now < fighter.stunUntil) return;
   fighter.facing = opponent.sprite.x >= fighter.sprite.x ? 1 : -1;
@@ -557,7 +471,6 @@ function isOnGround(fighter) {
   return b.touching.down || b.blocked.down;
 }
 
-// Derives the state name. Animations can hook into onStateChange later.
 function updateState(f, now, isEnemy) {
   let s;
   if (f.isDead) s = S.DEAD;
@@ -570,43 +483,146 @@ function updateState(f, now, isEnemy) {
   if (s !== f.state) { f.state = s; onStateChange(f, s); }
 }
 
-// Hook for sprite sheets, e.g. f.sprite.play(f.name + '_' + s.toLowerCase())
-function onStateChange(fighter, state) { /* placeholder */ }
+function onStateChange(fighter, state) { /* hook for sprite sheets */ }
+
+// ---- Procedural pose. Local space: x forward, y up, origin at the feet. ----
+const DEG = Math.PI / 180;
+function polar(o, a, l) { return { x: o.x + Math.sin(a * DEG) * l, y: o.y - Math.cos(a * DEG) * l }; }
+function chain(o, a1, a2, l1, l2) { const m = polar(o, a1, l1); return [m, polar(m, a2, l2)]; }
+const lerp = Phaser.Math.Linear;
+
+function buildPose(f, now) {
+  const c = f.cfg, st = f.state, s = c.scale, t = now / 1000;
+  const br = Math.sin(t * 3 + c.phase);
+  let lean = c.lean, tilt = 0, hipX = 0, bob = 0;
+  let fl = [28, 4], bl = [-24, -8], fa = [35, 125], ba = [15, 105];
+
+  if (st === S.RUN || st === S.CHASE) {
+    const ph = now * (f.name === 'enemy' ? 0.010 : 0.014), sp = Math.sin(ph);
+    fl = [sp * 46, sp * 46 - 32 * Math.max(0, Math.cos(ph))];
+    bl = [-sp * 46, -sp * 46 - 32 * Math.max(0, -Math.cos(ph))];
+    fa = [25 - sp * 38, 110 - sp * 30]; ba = [25 + sp * 38, 110 + sp * 30];
+    lean += 9; bob = Math.abs(Math.cos(ph)) * 2.5;
+  } else if (st === S.JUMP) {
+    fl = [78, -18]; bl = [32, -58]; fa = [55, 150]; ba = [35, 140]; lean += 4;
+  } else if (st === S.BLOCK) {
+    fl = [38, -4]; bl = [-32, -6]; fa = [42, 168]; ba = [28, 155]; lean += 8;
+  } else if (st === S.HIT) {
+    lean = -16; tilt = -12; fa = [-25, 15]; ba = [-45, -5]; fl = [20, 8]; bl = [-30, -14];
+  } else {
+    bob = br * 1.2; lean += br * 1.5; fa[1] += br * 4;      // idle breathing (also base for DEAD/ATTACK)
+  }
+
+  if (st === S.ATTACK && f.currentAttack) {
+    const a = f.currentAttack, el = now - f.attackStartTime;
+    const e = el < a.startup ? el / a.startup
+            : el < a.startup + a.active ? 1
+            : Math.max(0, 1 - (el - a.startup - a.active) / (a.total - a.startup - a.active));
+    if (f.currentAttackName === 'kick') {
+      fl = [lerp(28, 85, e), lerp(4, 88, e)]; bl = [-8, -2];
+      lean -= 10 * e; hipX = -2 * e; fa = [lerp(35, 15, e), lerp(125, 105, e)]; ba = [lerp(15, -35, e), lerp(105, 70, e)];
+    } else {
+      fa = [lerp(35, 88, e), lerp(125, 90, e)]; ba = [lerp(15, -10, e), lerp(105, 120, e)];
+      lean += 12 * e; hipX = 6 * e;
+    }
+  }
+
+  const L = 24, A = c.arm;
+  const O = { x: 0, y: 0 };
+  const fLeg = chain(O, fl[0], fl[1], L, L), bLeg = chain(O, bl[0], bl[1], L, L);
+  const H = { x: hipX, y: -Math.min(fLeg[1].y, bLeg[1].y) + bob };
+  const sh = function (p) { return { x: p.x + H.x, y: p.y + H.y }; };
+  const lr = lean * DEG;
+  const S_ = { x: H.x + Math.sin(lr) * c.torso, y: H.y + Math.cos(lr) * c.torso };
+  const hd = (lean + tilt) * DEG;
+  const Hd = { x: S_.x + Math.sin(hd) * (c.head + 3), y: S_.y + Math.cos(hd) * (c.head + 3) };
+  const fArm = chain({ x: S_.x + 2, y: S_.y - 3 }, fa[0], fa[1], A, A);
+  const bArm = chain({ x: S_.x - 2, y: S_.y - 3 }, ba[0], ba[1], A, A);
+  const n = { x: Math.cos(lr), y: -Math.sin(lr) };
+  const quad = [{ x: H.x + n.x * c.hw / 2, y: H.y + n.y * c.hw / 2 }, { x: S_.x + n.x * c.sw / 2, y: S_.y + n.y * c.sw / 2 },
+                { x: S_.x - n.x * c.sw / 2, y: S_.y - n.y * c.sw / 2 }, { x: H.x - n.x * c.hw / 2, y: H.y - n.y * c.hw / 2 }];
+
+  // Map local -> screen (death rotates the whole body backward around the feet)
+  const rot = f.isDead ? Math.min(84, (now - f.deathTime) * 0.22) * DEG : 0;
+  const cs = Math.cos(rot), sn = Math.sin(rot);
+  const fx = f.sprite.x, feetY = f.isDead ? GROUND_TOP : f.sprite.y + FIGHTER_HEIGHT / 2, d = f.facing;
+  const T = function (p) {
+    const x = p.x * cs - p.y * sn, y = p.x * sn + p.y * cs;
+    return { x: fx + d * s * x, y: feetY - s * Math.max(1, y) };
+  };
+  const m2 = function (arr) { return [T(sh(arr[0])), T(sh(arr[1]))]; };
+  return { H: T(H), S: T(S_), C: T(Hd), fLeg: m2(fLeg), bLeg: m2(bLeg), fArm: [T(fArm[0]), T(fArm[1])], bArm: [T(bArm[0]), T(bArm[1])],
+           quad: quad.map(T), sway: Math.sin(now / 170) * 3 + (f.sprite.body ? f.sprite.body.velocity.x * -0.01 * d : 0) };
+}
+
+// One silhouette pass. `add` widens every part (used for the golden rim pass).
+function paint(g, P, f, add, color, alpha) {
+  const c = f.cfg, s = c.scale, d = f.facing, w = function (v) { return v * s + add; };
+  g.fillStyle(color, alpha);
+  seg(g, P.H, P.bLeg[0], w(c.legW)); seg(g, P.bLeg[0], P.bLeg[1], w(c.legW * 0.82));
+  seg(g, P.S, P.bArm[0], w(c.armW)); seg(g, P.bArm[0], P.bArm[1], w(c.armW * 0.85));
+  // torso (slightly grown for the rim pass)
+  const q = P.quad, cx = (q[0].x + q[1].x + q[2].x + q[3].x) / 4, cy = (q[0].y + q[1].y + q[2].y + q[3].y) / 4;
+  const k = add ? 1.18 : 1;
+  g.fillPoints(q.map(function (p) { return { x: cx + (p.x - cx) * k, y: cy + (p.y - cy) * k }; }), true);
+  if (c.kind === 'enemy') {
+    g.fillCircle(P.S.x + d * 2, P.S.y + 2 * s, w(c.sw * 0.42));                       // pauldron
+    g.fillPoints([{ x: P.H.x - d * 11 * s - add, y: P.H.y }, { x: P.H.x + d * 11 * s + add, y: P.H.y },
+                  { x: P.H.x + d * 16 * s + add, y: P.H.y + 20 * s + add }, { x: P.H.x - d * 16 * s - add, y: P.H.y + 20 * s + add }], true); // armored skirt
+  } else {
+    g.fillTriangle(P.S.x, P.S.y - 2 - add, P.S.x - d * (22 + P.sway) - add, P.S.y + 6 + P.sway, P.S.x - d * 2, P.S.y + 8 + add); // scarf tail
+  }
+  seg(g, P.H, P.fLeg[0], w(c.legW)); seg(g, P.fLeg[0], P.fLeg[1], w(c.legW * 0.82));
+  drawHead(g, c.kind, P.C.x, P.C.y, c.head * s + add / 2, d);
+  seg(g, P.S, P.fArm[0], w(c.armW)); seg(g, P.fArm[0], P.fArm[1], w(c.armW * 0.85));
+}
+
+// Very dark brown highlight so the black body isn't completely flat
+function highlight(g, P, f) {
+  const c = f.cfg, s = c.scale, d = f.facing, q = P.quad;
+  const cx = (q[0].x + q[1].x + q[2].x + q[3].x) / 4, cy = (q[0].y + q[1].y + q[2].y + q[3].y) / 4;
+  g.fillStyle(C.BROWN, 0.9);
+  g.fillPoints(q.map(function (p) { return { x: cx + (p.x - cx) * 0.5 + d * 2, y: cy + (p.y - cy) * 0.9 }; }), true);
+  seg(g, P.H, P.fLeg[0], c.legW * s * 0.4); seg(g, P.S, P.fArm[0], c.armW * s * 0.4);
+}
 
 function updateFighterVisuals(f, now) {
-  const height = Math.max(0, (GROUND_TOP - FIGHTER_HEIGHT / 2) - f.sprite.y);
-  const shadowScale = Math.max(0.4, 1 - height / 300);
-  f.shadow.setPosition(f.sprite.x, GROUND_TOP + 3).setScale(shadowScale, shadowScale);
-  f.visual.setPosition(f.sprite.x, f.sprite.y).setScale(f.facing, 1)
-    .setRotation(f.isDead ? Math.PI / 2 : (f.state === S.HIT ? -f.facing * 0.1 : 0));
-  drawFighterSilhouette(f, now);
+  const P = buildPose(f, now);
+  const g = f.g;
+  g.clear();
+  const rimAlpha = f.state === S.HIT ? 0.95 : f.state === S.BLOCK ? 0.6 : f.state === S.DEAD ? 0.15 : 0.38;
+  paint(g, P, f, 3.5, f.state === S.HIT ? C.CREAM : C.GOLD, rimAlpha);   // golden rim (behind)
+  paint(g, P, f, 0, C.BLACK, 1);                                           // black silhouette (on top)
+  highlight(g, P, f);
 
-  // The floor shadow contracts while airborne to make jumps read clearly.
+  // Shadow: shrinks + fades in the air, larger on the ground
+  const h = Math.max(0, GROUND_TOP - (f.sprite.y + FIGHTER_HEIGHT / 2));
+  const sc = f.isDead ? 1.3 : Math.max(0.45, 1.1 - h / 260);
+  f.shadow.setPosition(f.sprite.x + (f.isDead ? -f.facing * 30 : 0), GROUND_TOP + 4).setScale(sc, 1).setAlpha(f.isDead ? 0.5 : Math.max(0.2, 0.6 - h / 500));
 }
 
 // ---------------------------------------------------------------------
-// 10. PLAYER CONTROLLER (reads only `input`)
+// 12. PLAYER CONTROLLER (unchanged)
 // ---------------------------------------------------------------------
 function updatePlayerController(now) {
   const p = player;
   const body = p.sprite.body;
   const onGround = isOnGround(p);
 
-  // Read and clear one-shot triggers so old presses never get "stored"
   const wantJump = input.jump, wantPunch = input.punch, wantKick = input.kick;
   input.jump = input.punch = input.kick = false;
 
-  if (now < p.stunUntil) {                 // stunned
+  if (now < p.stunUntil) {
     p.isBlocking = false;
     body.setVelocityX(body.velocity.x * 0.9);
     return;
   }
-  if (p.isAttacking) {                     // mid-attack
+  if (p.isAttacking) {
     if (onGround) body.setVelocityX(0);
     return;
   }
 
-  p.isBlocking = input.block && onGround;  // blocking: no moving
+  p.isBlocking = input.block && onGround;
   if (p.isBlocking) { body.setVelocityX(0); return; }
 
   body.setVelocityX(input.moveX * PLAYER_SPEED);
@@ -620,19 +636,19 @@ function updatePlayerController(now) {
 }
 
 // ---------------------------------------------------------------------
-// 11. ENEMY AI (IDLE -> CHASE -> ATTACK -> HIT -> DEAD)
+// 13. ENEMY AI (unchanged)
 // ---------------------------------------------------------------------
 function updateEnemyAI(now) {
   const body = enemy.sprite.body;
 
-  if (now < enemy.stunUntil) { body.setVelocityX(body.velocity.x * 0.9); return; }   // HIT
-  if (enemy.isAttacking) { body.setVelocityX(0); return; }                            // ATTACK
+  if (now < enemy.stunUntil) { body.setVelocityX(body.velocity.x * 0.9); return; }
+  if (enemy.isAttacking) { body.setVelocityX(0); return; }
 
   const distance = Math.abs(player.sprite.x - enemy.sprite.x);
-  if (player.isDead) { body.setVelocityX(0); return; }                                // IDLE
+  if (player.isDead) { body.setVelocityX(0); return; }
 
   if (distance > ENEMY_ATTACK_RANGE) {
-    body.setVelocityX(enemy.facing * ENEMY_SPEED);                                    // CHASE
+    body.setVelocityX(enemy.facing * ENEMY_SPEED);
   } else {
     body.setVelocityX(0);
     if (now >= enemy.nextAttackTime && now >= enemy.attackReadyAt) {
@@ -643,7 +659,7 @@ function updateEnemyAI(now) {
 }
 
 // ---------------------------------------------------------------------
-// 12. ATTACK SYSTEM
+// 14. ATTACK SYSTEM (unchanged)
 // ---------------------------------------------------------------------
 function startAttack(fighter, name) {
   fighter.isAttacking = true;
@@ -671,22 +687,17 @@ function getFighterRect(f) {
 }
 
 function updateAttack(attacker, defender) {
-  if (!attacker.isAttacking) { attacker.limb.setVisible(false); return; }
+  if (!attacker.isAttacking) return;
 
   const attack = attacker.currentAttack;
   const elapsed = scene.time.now - attacker.attackStartTime;
 
-  if (elapsed >= attack.total) {
-    attacker.isAttacking = false;
-    attacker.limb.setVisible(false);
-    return;
-  }
+  if (elapsed >= attack.total) { attacker.isAttacking = false; return; }
 
   const active = elapsed >= attack.startup && elapsed < attack.startup + attack.active;
-  if (!active) { attacker.limb.setVisible(false); return; }
+  if (!active) return;
 
   const hitbox = getAttackHitbox(attacker, attack);
-  attacker.limb.setVisible(false);
 
   if (!attacker.swingFx) { attacker.swingFx = true; spawnSwingFx(attacker, attack); }
 
@@ -698,22 +709,22 @@ function updateAttack(attacker, defender) {
 }
 
 // ---------------------------------------------------------------------
-// 13. DAMAGE, HIT REACTION, DEATH
+// 15. DAMAGE, HIT REACTION, DEATH
 // ---------------------------------------------------------------------
 function applyHit(attacker, defender, attack) {
   const now = scene.time.now;
   let damage = attack.damage;
   const blocked = defender.isBlocking;
   const dir = attacker.facing;
+  const strong = attack.damage >= 15;
 
   if (blocked) {
     damage = Math.round(damage * BLOCK_DAMAGE_MULTIPLIER);
-    defender.sprite.body.setVelocityX(dir * 80);          // small push, no stun
+    defender.sprite.body.setVelocityX(dir * 80);
     Sound.play('block');
   } else {
     defender.stunUntil = now + HIT_STUN_TIME;
-    defender.isAttacking = false;                          // hit interrupts attacks
-    defender.limb.setVisible(false);
+    defender.isAttacking = false;
     defender.sprite.body.setVelocityX(dir * attack.knock);
     spawnKnockbackDust(defender, dir);
     Sound.play('hit');
@@ -721,53 +732,57 @@ function applyHit(attacker, defender, attack) {
 
   defender.hp = Math.max(0, defender.hp - damage);
 
-  spawnHitSpark(defender.sprite.x - dir * 10, defender.sprite.y + attack.yOffset, blocked);
-  const isKick = attack === ATTACKS.kick;
-  scene.cameras.main.shake(blocked ? 45 : (isKick ? 110 : 75), blocked ? 0.0015 : (isKick ? 0.006 : 0.0035));
+  spawnHitSpark(defender.sprite.x - dir * 10, defender.sprite.y + attack.yOffset, blocked, strong);
+  scene.cameras.main.shake(blocked ? 50 : strong ? 140 : 90, blocked ? 0.0015 : strong ? 0.008 : 0.004);
 
   if (defender.hp <= 0) {
     defeatFighter(defender);
-    endFight(attacker === player ? 'PLAYER WINS!' : 'ENEMY WINS!');
+    endFight(attacker === player ? NAMES.player + ' WINS' : NAMES.enemy + ' WINS');
   }
 }
 
 // ---------------------------------------------------------------------
-// 14. EFFECTS (all generated with Phaser shapes)
+// 16. EFFECTS (Phaser shapes, gold/orange only)
 // ---------------------------------------------------------------------
 function fadeOut(obj, opts) {
   scene.tweens.add(Object.assign({ targets: obj, alpha: 0, duration: 250,
     onComplete: function () { obj.destroy(); } }, opts));
 }
 
-// Punch / kick swoosh: a stretched ellipse behind the swing
+// Motion streak: small for punch, longer/thicker for kick
 function spawnSwingFx(attacker, attack) {
   const hb = getAttackHitbox(attacker, attack);
   const isKick = attacker.currentAttackName === 'kick';
   const e = scene.add.ellipse(hb.centerX - attacker.facing * 15, hb.centerY,
-    attack.reach + 25, isKick ? 22 : 14, attack.color, 0.5).setDepth(4);
-  fadeOut(e, { scaleX: 1.4, scaleY: 0.4, duration: 180 });
+    attack.reach + (isKick ? 45 : 20), isKick ? 26 : 12, attack.color, 0.55).setDepth(4);
+  fadeOut(e, { scaleX: 1.4, scaleY: 0.3, duration: isKick ? 240 : 170 });
 }
 
-// Warm impact flare; blocks use a restrained gold ring.
-function spawnHitSpark(x, y, blocked) {
-  const color = blocked ? COLORS.gold : COLORS.cream;
-  const core = scene.add.circle(x, y, blocked ? 10 : 16, color).setDepth(5);
-  fadeOut(core, { scale: 2.2, duration: 250 });
+function spawnHitSpark(x, y, blocked, strong) {
+  const color = blocked ? C.GOLD : C.LGOLD;
+  const core = scene.add.circle(x, y, blocked ? 8 : strong ? 20 : 15, color, 0.9).setDepth(5);
+  fadeOut(core, { scale: 2.2, duration: 220 });
   if (blocked) {
-    const ring = scene.add.circle(x, y, 22).setStrokeStyle(3, COLORS.orange, 0.8).setDepth(5);
-    fadeOut(ring, { scale: 1.8, duration: 250 });
+    const ring = scene.add.circle(x, y, 20).setStrokeStyle(3, C.GOLD).setDepth(5);
+    fadeOut(ring, { scale: 1.7, duration: 240 });
   }
-  for (let i = 0; i < (blocked ? 4 : 7); i++) {
+  const n = blocked ? 4 : strong ? 10 : 7;
+  for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2;
-    const line = scene.add.rectangle(x, y, blocked ? 10 : 18, 2, i % 2 ? COLORS.orange : color).setRotation(a).setDepth(5);
-    fadeOut(line, { x: x + Math.cos(a) * (blocked ? 28 : 45), y: y + Math.sin(a) * (blocked ? 28 : 45), duration: 220 });
+    const line = scene.add.rectangle(x, y, blocked ? 10 : 16, 2, i % 2 ? C.ORANGE : C.LGOLD).setRotation(a).setDepth(5);
+    fadeOut(line, { x: x + Math.cos(a) * 50, y: y + Math.sin(a) * 50, duration: 240 });
+  }
+  if (!blocked) {   // ember burst
+    for (let i = 0; i < (strong ? 9 : 6); i++) {
+      const c = scene.add.circle(x, y, Phaser.Math.Between(2, 4), i % 2 ? C.ORANGE : C.GOLD).setDepth(5);
+      fadeOut(c, { x: x + Phaser.Math.Between(-60, 60), y: y - Phaser.Math.Between(10, 70), duration: 500 });
+    }
   }
 }
 
-// Dust puffs at the feet in the knockback direction
 function spawnKnockbackDust(defender, dir) {
   for (let i = 0; i < 4; i++) {
-    const d = scene.add.circle(defender.sprite.x, GROUND_TOP - 4, Phaser.Math.Between(5, 9), COLORS.orange, 0.45).setDepth(1);
+    const d = scene.add.circle(defender.sprite.x, GROUND_TOP - 4, Phaser.Math.Between(5, 9), 0x8a5a30, 0.5).setDepth(1);
     fadeOut(d, { x: d.x + dir * Phaser.Math.Between(20, 60), y: d.y - Phaser.Math.Between(5, 25), duration: 350 });
   }
 }
@@ -775,7 +790,7 @@ function spawnKnockbackDust(defender, dir) {
 function spawnDeathEffect(f) {
   for (let i = 0; i < 14; i++) {
     const a = Math.random() * Math.PI * 2;
-    const c = scene.add.circle(f.sprite.x, f.sprite.y, Phaser.Math.Between(4, 8), COLORS.gold).setDepth(6);
+    const c = scene.add.circle(f.sprite.x, f.sprite.y, Phaser.Math.Between(3, 7), i % 2 ? C.GOLD : C.ORANGE).setDepth(6);
     fadeOut(c, { x: f.sprite.x + Math.cos(a) * Phaser.Math.Between(40, 110),
                  y: f.sprite.y + Math.sin(a) * Phaser.Math.Between(40, 110), duration: 600 });
   }
@@ -784,10 +799,9 @@ function spawnDeathEffect(f) {
 
 function defeatFighter(f) {
   f.isDead = true;
+  f.deathTime = scene.time.now;
   f.isAttacking = false;
   f.isBlocking = false;
-  f.limb.setVisible(false);
-  f.faceMarker.setVisible(false);
   f.sprite.body.setVelocity(0, 0);
   f.sprite.body.enable = false;
   f.sprite.angle = 90;
@@ -797,8 +811,17 @@ function defeatFighter(f) {
 }
 
 // ---------------------------------------------------------------------
-// 15. END OF FIGHT + RESTART
+// 17. TIMER, END OF FIGHT + RESTART
 // ---------------------------------------------------------------------
+function tickTimer() {
+  if (fightState !== 'fighting') return;
+  timeLeft = Math.max(0, timeLeft - 1);
+  if (timeLeft === 0) {
+    const msg = player.hp === enemy.hp ? 'DRAW' : (player.hp > enemy.hp ? NAMES.player : NAMES.enemy) + ' WINS';
+    endFight(msg);
+  }
+}
+
 function endFight(message) {
   fightState = 'over';
   resetInput();
@@ -808,59 +831,96 @@ function endFight(message) {
       f.sprite.body.setVelocityX(0);
       f.isAttacking = false;
       f.isBlocking = false;
-      f.limb.setVisible(false);
     }
   });
 
-  scene.add.text(GAME_WIDTH / 2, 200, message, {
-    fontSize: '54px', fontFamily: 'Arial', color: '#fff0b0',
-    stroke: '#080604', strokeThickness: 8, letterSpacing: 4
-  }).setOrigin(0.5).setDepth(20).setScrollFactor(0);
+  const veil = scene.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH + 80, GAME_HEIGHT + 80, C.BLACK, 0.5)
+    .setDepth(38).setScrollFactor(0).setAlpha(0);
+  scene.tweens.add({ targets: veil, alpha: 1, duration: 600 });
 
-  const btn = scene.add.text(GAME_WIDTH / 2, 300, 'RESTART', {
-    fontSize: '23px', fontFamily: 'Arial', color: '#fff0b0',
-    backgroundColor: '#1a0f08', padding: { x: 28, y: 14 },
-    stroke: '#e5a83b', strokeThickness: 1, letterSpacing: 4
-  }).setOrigin(0.5).setDepth(20).setScrollFactor(0).setInteractive({ useHandCursor: true });
+  const title = scene.add.text(GAME_WIDTH / 2, 205, message, {
+    fontSize: '64px', fontFamily: SERIF, fontStyle: 'bold', color: '#ffd76a'
+  }).setOrigin(0.5).setDepth(40).setScrollFactor(0).setAlpha(0).setLetterSpacing(8).setShadow(0, 5, '#080604', 12, true, true);
+  scene.tweens.add({ targets: title, alpha: 1, duration: 600 });
 
-  btn.on('pointerover', function () { btn.setBackgroundColor('#44200b'); });
+  const btn = scene.add.text(GAME_WIDTH / 2, 305, 'RESTART', {
+    fontSize: '28px', fontFamily: SERIF, fontStyle: 'bold', color: '#ffd76a',
+    backgroundColor: '#1a0f08', padding: { x: 30, y: 12 }
+  }).setOrigin(0.5).setDepth(40).setScrollFactor(0).setLetterSpacing(6).setInteractive({ useHandCursor: true });
+
+  btn.on('pointerover', function () { btn.setBackgroundColor('#a63d0d'); });
   btn.on('pointerout', function () { btn.setBackgroundColor('#1a0f08'); });
-  btn.on('pointerdown', function () { scene.scene.restart(); });   // create() resets everything
+  btn.on('pointerdown', function () { scene.scene.restart(); });
 
-  // Keyboard restart too (Enter)
   scene.input.keyboard.once('keydown-ENTER', function () { scene.scene.restart(); });
 }
 
 // ---------------------------------------------------------------------
-// 16. HEALTH BARS (player drains left-to-right, enemy right-to-left)
+// 18. HUD: portraits, ornate health bars, round timer
 // ---------------------------------------------------------------------
+function portrait(g, cx, cy, kind, d) {
+  g.fillStyle(C.BLACK, 0.9); g.fillCircle(cx, cy, 34);
+  g.fillStyle(C.BROWN, 1);   g.fillCircle(cx, cy, 31);
+  g.fillStyle(C.DEEP, 0.55); g.fillCircle(cx, cy - 4, 24);
+  g.fillStyle(C.GOLD, 0.45); g.fillCircle(cx, cy - 4, 15);
+  g.fillStyle(C.BLACK, 1);
+  const wd = kind === 'enemy' ? 1.1 : 1;
+  g.fillPoints([{ x: cx - 20 * wd, y: cy + 24 }, { x: cx - 23 * wd, y: cy + 13 }, { x: cx - 11, y: cy + 7 },
+                { x: cx + 11, y: cy + 7 }, { x: cx + 23 * wd, y: cy + 13 }, { x: cx + 20 * wd, y: cy + 24 }], true);
+  drawHead(g, kind, cx, cy - 4, kind === 'enemy' ? 10.5 : 9.5, d);
+  g.lineStyle(3, C.GOLD, 1); g.strokeCircle(cx, cy, 32);
+  g.lineStyle(1, C.GOLD, 0.45); g.strokeCircle(cx, cy, 37);
+}
+
+function buildHUD() {
+  const g = scene.add.graphics().setDepth(30).setScrollFactor(0);
+  portrait(g, 60, 56, 'player', 1);
+  portrait(g, GAME_WIDTH - 60, 56, 'enemy', -1);
+
+  // decorative lines under the names / bars
+  g.lineStyle(1, C.GOLD, 0.7);
+  [[104, 434, 1], [GAME_WIDTH - 104, GAME_WIDTH - 434, -1]].forEach(function (l) {
+    g.lineBetween(l[0], 72, l[1], 72);
+    g.fillStyle(C.GOLD, 1); g.fillTriangle(l[1], 68, l[1] + l[2] * 8, 72, l[1], 76);
+  });
+  // timer medallion
+  g.fillStyle(C.BLACK, 0.9); g.fillCircle(GAME_WIDTH / 2, 48, 27);
+  g.lineStyle(2, C.GOLD, 1); g.strokeCircle(GAME_WIDTH / 2, 48, 27);
+  g.lineStyle(1, C.GOLD, 0.5); g.strokeCircle(GAME_WIDTH / 2, 48, 32);
+  g.lineBetween(GAME_WIDTH / 2 - 62, 48, GAME_WIDTH / 2 - 36, 48); g.lineBetween(GAME_WIDTH / 2 + 36, 48, GAME_WIDTH / 2 + 62, 48);
+
+  hudBars = scene.add.graphics().setDepth(31).setScrollFactor(0);
+  const nameStyle = { fontSize: '17px', fontFamily: SERIF, fontStyle: 'bold', color: '#ffd76a' };
+  scene.add.text(108, 22, NAMES.player, nameStyle).setDepth(32).setScrollFactor(0).setLetterSpacing(5);
+  scene.add.text(GAME_WIDTH - 108, 22, NAMES.enemy, nameStyle).setOrigin(1, 0).setDepth(32).setScrollFactor(0).setLetterSpacing(5);
+  timerText = scene.add.text(GAME_WIDTH / 2, 48, String(ROUND_TIME), { fontSize: '24px', fontFamily: SERIF, fontStyle: 'bold', color: '#fff0b0' })
+    .setOrigin(0.5).setDepth(32).setScrollFactor(0);
+  scene.add.text(GAME_WIDTH / 2, 84, 'ROUND 1', { fontSize: '11px', fontFamily: SERIF, color: '#e5a83b' })
+    .setOrigin(0.5).setDepth(32).setScrollFactor(0).setLetterSpacing(4).setAlpha(0.8);
+}
+
+function drawBar(g, x, y, w, h, f, flip, c1, c2) {
+  g.fillStyle(C.BLACK, 0.9); g.fillRect(x - 3, y - 3, w + 6, h + 6);
+  const gw = w * f.ghostHp / MAX_HP, fw = w * f.showHp / MAX_HP;
+  g.fillStyle(C.DEEP, 0.9); g.fillRect(flip ? x + w - gw : x, y, gw, h);      // draining trail
+  vgrad(g, flip ? x + w - fw : x, y, fw, h, c1, c2, 6, 1);
+  g.fillStyle(C.BLACK, 0.45);
+  for (let i = 1; i < 5; i++) g.fillRect(x + w * i / 5 - 1, y, 2, h);           // segment ticks
+  g.lineStyle(2, C.GOLD, 1); g.strokeRect(x - 3, y - 3, w + 6, h + 6);
+  const ex = flip ? x - 3 : x + w + 3, dx = flip ? -9 : 9;                      // diamond end cap
+  g.fillStyle(C.GOLD, 1); g.fillTriangle(ex, y + h / 2 - 7, ex + dx, y + h / 2, ex, y + h / 2 + 7);
+}
+
 function drawHealthBars() {
-  const w = 310, h = 16, y = 48;
-  const px = 108, ex = GAME_WIDTH - 108 - w;
-  const g = healthBarGraphics;
+  [player, enemy].forEach(function (f) {
+    f.showHp += (f.hp - f.showHp) * 0.15;
+    if (f.ghostHp > f.hp) f.ghostHp = Math.max(f.hp, f.ghostHp - 0.35); else f.ghostHp = f.hp;
+  });
+  const g = hudBars, w = 320, h = 16, y = 40;
   g.clear();
+  drawBar(g, 108, y, w, h, player, false, C.GOLD, C.LGOLD);
+  drawBar(g, GAME_WIDTH - 108 - w, y, w, h, enemy, true, C.DEEP, C.ORANGE);
 
-  player.displayHp += (player.hp - player.displayHp) * 0.16;
-  enemy.displayHp += (enemy.hp - enemy.displayHp) * 0.16;
-  if (Math.abs(player.hp - player.displayHp) < 0.08) player.displayHp = player.hp;
-  if (Math.abs(enemy.hp - enemy.displayHp) < 0.08) enemy.displayHp = enemy.hp;
-  const pf = w * (player.displayHp / MAX_HP), ef = w * (enemy.displayHp / MAX_HP);
-
-  g.fillStyle(COLORS.black, 0.96);
-  g.fillRect(px, y, w, h); g.fillRect(ex, y, w, h);
-  g.fillStyle(COLORS.gold, 1); g.fillRect(px, y, pf, h);
-  g.fillStyle(COLORS.orange, 1); g.fillRect(ex + w - ef, y, ef, h);
-  g.fillStyle(COLORS.cream, 0.5);
-  g.fillRect(px, y, pf, 2);
-  g.fillRect(ex + w - ef, y, ef, 2);
-  g.lineStyle(2, COLORS.gold, 0.82);
-  g.strokeRect(px, y, w, h); g.strokeRect(ex, y, w, h);
-  g.lineStyle(1, COLORS.orange, 0.55);
-  g.lineBetween(px - 8, y - 4, px, y);
-  g.lineBetween(px + w, y + h, px + w + 8, y + h + 4);
-  g.lineBetween(ex - 8, y + h, ex, y + h - 4);
-  g.lineBetween(ex + w, y, ex + w + 8, y - 4);
-
-  hpTexts.player.setText(String(player.hp).padStart(3, '0'));
-  hpTexts.enemy.setText(String(enemy.hp).padStart(3, '0'));
+  timerText.setText(String(timeLeft));
+  timerText.setColor(timeLeft <= 10 ? '#d96b16' : '#fff0b0');
 }
